@@ -55,6 +55,8 @@ def next_daily(after_dt: datetime, tod: time) -> datetime:
         after_dt = _local_now()
     if timezone.is_naive(after_dt):
         after_dt = timezone.make_aware(after_dt, timezone.get_current_timezone())
+    if tod is None:
+        raise ValueError("time_of_day is required for daily schedules")
 
     today = after_dt.date()
     candidate = _combine_local(today, tod)
@@ -69,6 +71,8 @@ def next_weekly(after_dt: datetime, tod: time, weekday: int) -> datetime:
     if timezone.is_naive(after_dt):
         after_dt = timezone.make_aware(after_dt, timezone.get_current_timezone())
 
+    if tod is None:
+        raise ValueError("time_of_day is required for weekly schedules")
     _validate_weekday(weekday)
 
     today = after_dt.date()
@@ -90,6 +94,8 @@ def next_monthly(after_dt: datetime, tod: time, day_of_month: int) -> datetime:
     if timezone.is_naive(after_dt):
         after_dt = timezone.make_aware(after_dt, timezone.get_current_timezone())
 
+    if tod is None:
+        raise ValueError("time_of_day is required for monthly schedules")
     _validate_day_of_month(day_of_month)
 
     y, m = after_dt.year, after_dt.month
@@ -120,6 +126,8 @@ def next_yearly(after_dt: datetime, tod: time, month_of_year: int, day_of_year: 
     if timezone.is_naive(after_dt):
         after_dt = timezone.make_aware(after_dt, timezone.get_current_timezone())
 
+    if tod is None:
+        raise ValueError("time_of_day is required for yearly schedules")
     _validate_yearly(month_of_year, day_of_year)
 
     y = after_dt.year

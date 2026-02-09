@@ -1,4 +1,5 @@
 from django.db import models
+from eth_utils import is_address, to_checksum_address
 from orgs.models import Organization
 
 
@@ -18,6 +19,11 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.org_id}:{self.wallet}"
+
+    def save(self, *args, **kwargs):
+        if self.wallet and is_address(self.wallet):
+            self.wallet = to_checksum_address(self.wallet)
+        super().save(*args, **kwargs)
 
 
 class PayrollSchedule(models.Model):
@@ -80,7 +86,7 @@ class PayrollRun(models.Model):
     )
 
     # Distinct from PayrollSchedule.run_nonce (this is the nonce value copied into the run)
-    schedule_nonce = models.IntegerField(null=True, blank=True)
+    run_nonce = models.IntegerField(null=True, blank=True)
 
     payroll_id = models.BigIntegerField(unique=True)
 
@@ -109,7 +115,7 @@ class PayrollRun(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["schedule", "schedule_nonce"],
+                fields=["schedule", "run_nonce"],
                 name="uniq_run_per_schedule_nonce",
                 condition=models.Q(schedule__isnull=False),
             )
@@ -117,6 +123,13 @@ class PayrollRun(models.Model):
 
     def __str__(self):
         return f"{self.org_id}:{self.payroll_id} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        if self.token and is_address(self.token):
+            self.token = to_checksum_address(self.token)
+        if self.vault and is_address(self.vault):
+            self.vault = to_checksum_address(self.vault)
+        super().save(*args, **kwargs)
 
 
 class PayrollClaim(models.Model):
@@ -146,3 +159,8 @@ class PayrollClaim(models.Model):
 
     def __str__(self):
         return f"{self.run_id}:{self.employee_wallet}:{self.status}"
+
+    def save(self, *args, **kwargs):
+        if self.employee_wallet and is_address(self.employee_wallet):
+            self.employee_wallet = to_checksum_address(self.employee_wallet)
+        super().save(*args, **kwargs)

@@ -79,15 +79,12 @@ def tick_schedules():
             schedule_type__in=["daily", "weekly", "monthly", "yearly"],
             next_run_at__isnull=False,
             next_run_at__lte=now,
-        ).values("id", "run_nonce", "next_run_at")
+        ).values("id")
     )
 
     for row in due:
         sid = row["id"]
-        prev_nonce = int(row["run_nonce"] or 0)
 
-        # Compute the next run time based on "now"
-        # We do this outside first, then confirm inside transaction.
         with transaction.atomic():
             # Re-fetch the schedule inside transaction (latest data)
             sched = PayrollSchedule.objects.get(id=sid)
@@ -96,7 +93,9 @@ def tick_schedules():
                 continue
 
             # Compute next_run_at
-            next_run = _compute_next_run(sched, now)
+            base_time = max(now, sched.next_run_at)
+            next_run = _compute_next_run(sched, base_time)
+            prev_nonce = int(sched.run_nonce or 0)
 
             # Atomic lock: only one worker can bump run_nonce from prev -> prev+1
             updated = PayrollSchedule.objects.filter(
@@ -105,7 +104,6 @@ def tick_schedules():
                 next_run_at=sched.next_run_at,  # ensures we are locking this exact due occurrence
             ).update(
                 run_nonce=prev_nonce + 1,
-                last_run_at=now,
                 next_run_at=next_run,
             )
 
@@ -122,20 +120,25 @@ def tick_schedules():
                 continue
 
             payroll_id = generate_payroll_id()
+            claim_window_days = PayrollRun._meta.get_field("claim_window_days").default
+            close_at = now + timezone.timedelta(days=claim_window_days)
 
             # Create the run linked to this schedule + the nonce we just assigned
             run = PayrollRun.objects.create(
                 org=org,
                 schedule=sched,
-                schedule_nonce=prev_nonce + 1,
+                run_nonce=prev_nonce + 1,
                 payroll_id=payroll_id,
                 token=_norm_addr(CUSDC),
                 vault=_norm_addr(PAYROLL_VAULT),
                 total=len(employees),
                 total_amount_units=sum(int(e.salary_units) for e in employees),
                 status="draft",
-                close_at=None,
+                claim_window_days=claim_window_days,
+                close_at=close_at,
             )
+            sched.last_run_at = now
+            sched.save(update_fields=["last_run_at"])
 
             claims = [
                 PayrollClaim(
