@@ -32,17 +32,24 @@ def _require_env():
     _norm_addr(PAYROLL_VAULT)
 
 
-def generate_payroll_id(max_tries: int = 10) -> int:
+def generate_payroll_id(max_tries: int = 20) -> int:
     """
     SQLite-safe, collision-resistant payrollId generator.
-    Produces a uint256-like int (we use 96 bits).
+
+    SQLite INTEGER is signed 64-bit (max 2^63 - 1),
+    so payroll_id must be <= 9223372036854775807.
     """
+    MAX_SQLITE_INT = (1 << 63) - 1
+
     for _ in range(max_tries):
-        pid = secrets.randbits(96)
-        if pid == 0:
+        # 63 bits guarantees 0..(2^63 - 1)
+        pid = secrets.randbits(63)
+        if pid <= 0 or pid > MAX_SQLITE_INT:
             continue
+
         if not PayrollRun.objects.filter(payroll_id=pid).exists():
             return pid
+
     raise RuntimeError("Could not generate unique payroll_id")
 
 
