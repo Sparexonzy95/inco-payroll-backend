@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+*.sqlite3
+/media/
+staticfiles/
+
+# Env
+.env
+.env.*
+.vscode/
+.idea/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
