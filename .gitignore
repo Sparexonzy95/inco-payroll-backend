@@ -24,3 +24,6 @@ staticfiles/
 # Celery
 celerybeat-schedule
 celerybeat.pid
+celerybeat-schedule.dat
+celerybeat-schedule.dat-shm
+celerybeat-schedule.dat-wal
