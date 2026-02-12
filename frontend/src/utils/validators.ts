@@ -1,4 +1,5 @@
-import { SchedulePayload } from '../api/types'
+import type { SchedulePayload } from "../api/types";
+
 
 export const validateSchedulePayload = (payload: SchedulePayload) => {
   const errors: Record<string, string> = {}

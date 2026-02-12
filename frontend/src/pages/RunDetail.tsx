@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import Card from '../components/Card'
 import Table from '../components/Table'
 import { listRunClaims, openRun } from '../api/payroll'
-import { RunClaimsResponse } from '../api/types'
+import type { RunClaimsResponse } from '../api/types'
 import { formatDateTime } from '../utils/format'
 
 const RunDetail = () => {

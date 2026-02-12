@@ -4,7 +4,7 @@ import Card from '../components/Card'
 import Table from '../components/Table'
 import FormField from '../components/FormField'
 import { listRuns } from '../api/payroll'
-import { PayrollRun } from '../api/types'
+import type { PayrollRun } from '../api/types'
 import { formatDateTime } from '../utils/format'
 import { tokenStore } from '../auth/tokenStore'
 

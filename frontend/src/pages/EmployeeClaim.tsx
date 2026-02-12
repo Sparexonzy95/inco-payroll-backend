@@ -2,7 +2,7 @@ import { useState } from 'react'
 import Card from '../components/Card'
 import FormField from '../components/FormField'
 import { getClaim } from '../api/payroll'
-import { PayrollClaimResponse } from '../api/types'
+import type { PayrollClaimResponse } from '../api/types'
 
 const EmployeeClaim = () => {
   const [payrollId, setPayrollId] = useState('')
