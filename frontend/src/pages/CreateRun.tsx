@@ -27,7 +27,7 @@ const CreateRun = () => {
       const rid = run.run_id ?? run.id
       if (rid) navigate(`/runs/${rid}`)
     } catch {
-      setError('Failed to create run. Ensure active employees and active org are set.')
+      setError('Failed to create run. Ensure active employees exist and employer profile is registered.')
     } finally {
       setLoading(false)
     }
@@ -38,7 +38,7 @@ const CreateRun = () => {
       <header className="page-header">
         <div>
           <h1>Create run</h1>
-          <p className="muted">Creates a draft payroll run for active employees in your active org.</p>
+          <p className="muted">Creates a draft payroll run for active employees under your employer profile.</p>
         </div>
       </header>
 

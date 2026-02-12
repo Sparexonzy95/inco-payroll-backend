@@ -2,15 +2,26 @@ from django.contrib.auth.models import User
 from django.db import models
 
 
+class Employer(models.Model):
+    name = models.CharField(max_length=120)
+    email = models.EmailField(unique=True)
+    wallet_address = models.CharField(max_length=42, unique=True, db_index=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.wallet_address})"
+
+
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
-    wallet = models.CharField(max_length=42, unique=True, null=True, blank=True)
-    active_org = models.ForeignKey(
-        "orgs.Organization",
+    wallet_address = models.CharField(max_length=42, unique=True, null=True, blank=True)
+    employer = models.ForeignKey(
+        Employer,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="active_users",
+        related_name="users",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

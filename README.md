@@ -11,15 +11,20 @@
 
 ### Auth endpoints
 
-- `POST /api/auth/nonce/` with `{ "wallet": "0x..." }`
+- `POST /api/auth/nonce/` with `{ "wallet": "0x...", "chainId": 84532 }`
 - `POST /api/auth/wallet-login/` with `{ "wallet": "0x...", "signature": "0x...", "nonce": "..." }`
 - `POST /api/auth/refresh/`
 - `GET /api/auth/me/`
-- `POST /api/auth/set-active-org/` with `{ "org_id": <int> }`
+- `POST /api/auth/employer/register/` with `{ "name": "Acme", "email": "ops@acme.com" }`
 
-### Payroll endpoints and org derivation
+### Role model
 
-Employer endpoints now derive organization from the authenticated user's active org (set via `/api/auth/set-active-org/`). Frontend does not send `org_id` for payroll schedule/run operations.
+- Employer: wallet owner that must complete employer registration (`name` + `email`) before payroll management.
+- Employee: any wallet included in a payroll run; employee does not need an employer profile.
+
+### Payroll endpoint behavior
+
+Employer payroll endpoints derive employer from authenticated wallet only (no `org_id` payload/query params).
 
 ## Frontend (React + Vite)
 
@@ -35,4 +40,5 @@ Frontend uses Vite proxy for `/api` to `http://127.0.0.1:8000`.
 2. Frontend requests nonce from backend.
 3. User signs backend message with `personal_sign`.
 4. Frontend exchanges signature for JWT access/refresh.
-5. Frontend fetches `/api/auth/me/` and prompts for org selection when needed.
+5. Frontend fetches `/api/auth/me/`.
+6. If employer profile is missing, frontend routes to employer onboarding page.

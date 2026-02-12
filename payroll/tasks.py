@@ -1,13 +1,13 @@
 import os
 import secrets
+
 from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
-
 from eth_utils import is_address, to_checksum_address
 
-from payroll.models import PayrollSchedule, PayrollRun, Employee, PayrollClaim
-from payroll.schedule_utils import _local_now, next_daily, next_weekly, next_monthly, next_yearly
+from payroll.models import Employee, PayrollClaim, PayrollRun, PayrollSchedule
+from payroll.schedule_utils import _local_now, next_daily, next_monthly, next_weekly, next_yearly
 
 CUSDC = os.getenv("CUSDC", "")
 PAYROLL_VAULT = os.getenv("PAYROLL_VAULT", "")
@@ -33,16 +33,9 @@ def _require_env():
 
 
 def generate_payroll_id(max_tries: int = 20) -> int:
-    """
-    SQLite-safe, collision-resistant payrollId generator.
-
-    SQLite INTEGER is signed 64-bit (max 2^63 - 1),
-    so payroll_id must be <= 9223372036854775807.
-    """
     MAX_SQLITE_INT = (1 << 63) - 1
 
     for _ in range(max_tries):
-        # 63 bits guarantees 0..(2^63 - 1)
         pid = secrets.randbits(63)
         if pid <= 0 or pid > MAX_SQLITE_INT:
             continue
@@ -68,14 +61,6 @@ def _compute_next_run(schedule: PayrollSchedule, after_dt):
 
 @shared_task
 def tick_schedules():
-    """
-    Runs every minute (Celery Beat).
-    Creates ONE draft PayrollRun per due schedule occurrence, even on SQLite.
-
-    SQLite note:
-    - select_for_update is ignored
-    - so we use an atomic UPDATE as a lock (compare-and-swap using run_nonce)
-    """
     _require_env()
 
     now = _local_now()
@@ -93,36 +78,29 @@ def tick_schedules():
         sid = row["id"]
 
         with transaction.atomic():
-            # Re-fetch the schedule inside transaction (latest data)
             sched = PayrollSchedule.objects.get(id=sid)
 
             if not sched.enabled or not sched.next_run_at or sched.next_run_at > now:
                 continue
 
-            # Compute next_run_at
             base_time = max(now, sched.next_run_at)
             next_run = _compute_next_run(sched, base_time)
             prev_nonce = int(sched.run_nonce or 0)
 
-            # Atomic lock: only one worker can bump run_nonce from prev -> prev+1
             updated = PayrollSchedule.objects.filter(
                 id=sid,
                 run_nonce=prev_nonce,
-                next_run_at=sched.next_run_at,  # ensures we are locking this exact due occurrence
+                next_run_at=sched.next_run_at,
             ).update(
                 run_nonce=prev_nonce + 1,
                 next_run_at=next_run,
             )
 
             if updated != 1:
-                # Another worker already processed this schedule occurrence
                 continue
 
-            # We are the winner for this schedule tick
-            org = sched.org
-            employees = list(Employee.objects.filter(org=org, active=True).order_by("wallet"))
-
-            # If no employees, we still advanced schedule, so just skip run creation
+            employer = sched.employer
+            employees = list(Employee.objects.filter(employer=employer, active=True).order_by("wallet"))
             if not employees:
                 continue
 
@@ -130,9 +108,8 @@ def tick_schedules():
             claim_window_days = PayrollRun._meta.get_field("claim_window_days").default
             close_at = now + timezone.timedelta(days=claim_window_days)
 
-            # Create the run linked to this schedule + the nonce we just assigned
             run = PayrollRun.objects.create(
-                org=org,
+                employer=employer,
                 schedule=sched,
                 run_nonce=prev_nonce + 1,
                 payroll_id=payroll_id,

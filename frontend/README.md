@@ -14,4 +14,5 @@ npm run dev
 
 - Wallet connect + nonce signing only (no username/password form)
 - JWT tokens are stored in localStorage
-- User selects an active organization after login when multiple org memberships exist
+- Employer onboarding (name + email) is required before employer payroll actions
+- Employee claim page uses wallet-authenticated user wallet for claim lookup

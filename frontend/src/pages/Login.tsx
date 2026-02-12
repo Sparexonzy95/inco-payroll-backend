@@ -13,7 +13,7 @@ declare global {
 }
 
 const Login = () => {
-  const { loginWithWallet, me } = useAuth()
+  const { loginWithWallet } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [error, setError] = useState<string | null>(null)
@@ -43,8 +43,8 @@ const Login = () => {
         params: [nonceResponse.message, wallet],
       })) as string
 
-      await loginWithWallet(wallet, signature, nonceResponse.nonce)
-      navigate(me?.active_org_id ? from : '/org-select', { replace: true })
+      const user = await loginWithWallet(wallet, signature, nonceResponse.nonce)
+      navigate(user?.is_employer_registered ? from : '/employer-onboarding', { replace: true })
     } catch {
       setError('Wallet login failed. Please retry the sign-in flow.')
     } finally {

@@ -13,8 +13,8 @@ const RequireAuth = () => {
     return <p>Loading profile...</p>
   }
 
-  if (me && me.orgs.length > 0 && !me.active_org_id && location.pathname !== '/org-select') {
-    return <Navigate to="/org-select" replace />
+  if (me && !me.is_employer_registered && location.pathname !== '/employer-onboarding' && location.pathname !== '/employee-claim') {
+    return <Navigate to="/employer-onboarding" replace />
   }
 
   return <Outlet />

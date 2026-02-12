@@ -6,8 +6,8 @@ import CommitRun from './pages/CommitRun'
 import CreateRun from './pages/CreateRun'
 import EmployeeClaim from './pages/EmployeeClaim'
 import EmployerDashboard from './pages/EmployerDashboard'
+import EmployerOnboarding from './pages/EmployerOnboarding'
 import Login from './pages/Login'
-import OrgSelect from './pages/OrgSelect'
 import RunDetail from './pages/RunDetail'
 import Runs from './pages/Runs'
 import Schedules from './pages/Schedules'
@@ -21,7 +21,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route element={<RequireAuth />}>
-              <Route path="/org-select" element={<OrgSelect />} />
+              <Route path="/employer-onboarding" element={<EmployerOnboarding />} />
               <Route path="/" element={<EmployerDashboard />} />
               <Route path="/schedules" element={<Schedules />} />
               <Route path="/runs" element={<Runs />} />

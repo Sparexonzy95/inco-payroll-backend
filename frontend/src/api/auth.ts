@@ -20,7 +20,7 @@ export const getMe = async (): Promise<MeResponse> => {
   return response.data
 }
 
-export const setActiveOrg = async (orgId: number): Promise<{ org_id: number; role: string }> => {
-  const response = await api.post<{ org_id: number; role: string }>('/api/auth/set-active-org/', { org_id: orgId })
+export const registerEmployer = async (payload: { name: string; email: string }): Promise<MeResponse> => {
+  const response = await api.post<MeResponse>('/api/auth/employer/register/', payload)
   return response.data
 }

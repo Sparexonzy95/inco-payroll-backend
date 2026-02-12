@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { getMe, setActiveOrg as setActiveOrgRequest, walletLogin } from '../api/auth'
+import { getMe, registerEmployer, walletLogin } from '../api/auth'
 import type { MeResponse } from '../api/types'
 import { tokenStore } from './tokenStore'
 
@@ -8,9 +8,9 @@ interface AuthContextValue {
   isAuthenticated: boolean
   me: MeResponse | null
   loadingMe: boolean
-  loginWithWallet: (wallet: string, signature: string, nonce: string) => Promise<void>
+  loginWithWallet: (wallet: string, signature: string, nonce: string) => Promise<MeResponse | null>
   refreshMe: () => Promise<void>
-  selectActiveOrg: (orgId: number) => Promise<void>
+  submitEmployerOnboarding: (name: string, email: string) => Promise<void>
   logout: () => void
 }
 
@@ -27,7 +27,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const profile = await getMe()
       setMe(profile)
       if (profile.wallet) tokenStore.setWallet(profile.wallet)
-      if (profile.active_org_id) tokenStore.setActiveOrgId(String(profile.active_org_id))
     } catch {
       setMe(null)
     } finally {
@@ -47,18 +46,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setAccessToken(data.access)
     if (data.user.wallet) tokenStore.setWallet(data.user.wallet)
     await refreshMe()
+    return data.user
   }
 
-  const selectActiveOrg = async (orgId: number) => {
-    await setActiveOrgRequest(orgId)
-    tokenStore.setActiveOrgId(String(orgId))
-    await refreshMe()
+  const submitEmployerOnboarding = async (name: string, email: string) => {
+    const response = await registerEmployer({ name, email })
+    setMe(response)
   }
 
   const logout = () => {
     tokenStore.clearTokens()
     tokenStore.clearWallet()
-    tokenStore.clearActiveOrgId()
     setAccessToken(null)
     setMe(null)
   }
@@ -70,7 +68,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       loadingMe,
       loginWithWallet,
       refreshMe,
-      selectActiveOrg,
+      submitEmployerOnboarding,
       logout,
     }),
     [accessToken, me, loadingMe],
