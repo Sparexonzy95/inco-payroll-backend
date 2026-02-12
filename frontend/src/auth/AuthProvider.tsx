@@ -1,11 +1,16 @@
-import { createContext, ReactNode, useContext, useMemo, useState } from 'react'
-import { login as loginRequest } from '../api/auth'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { getMe, setActiveOrg as setActiveOrgRequest, walletLogin } from '../api/auth'
+import type { MeResponse } from '../api/types'
 import { tokenStore } from './tokenStore'
 
 interface AuthContextValue {
   isAuthenticated: boolean
-  username: string | null
-  login: (username: string, password: string) => Promise<void>
+  me: MeResponse | null
+  loadingMe: boolean
+  loginWithWallet: (wallet: string, signature: string, nonce: string) => Promise<void>
+  refreshMe: () => Promise<void>
+  selectActiveOrg: (orgId: number) => Promise<void>
   logout: () => void
 }
 
@@ -13,31 +18,62 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [accessToken, setAccessToken] = useState(tokenStore.getAccessToken())
-  const [username, setUsername] = useState(tokenStore.getUsername())
+  const [me, setMe] = useState<MeResponse | null>(null)
+  const [loadingMe, setLoadingMe] = useState(Boolean(tokenStore.getAccessToken()))
 
-  const login = async (user: string, password: string) => {
-    const data = await loginRequest(user, password)
+  const refreshMe = async () => {
+    setLoadingMe(true)
+    try {
+      const profile = await getMe()
+      setMe(profile)
+      if (profile.wallet) tokenStore.setWallet(profile.wallet)
+      if (profile.active_org_id) tokenStore.setActiveOrgId(String(profile.active_org_id))
+    } catch {
+      setMe(null)
+    } finally {
+      setLoadingMe(false)
+    }
+  }
+
+  useEffect(() => {
+    if (accessToken) {
+      void refreshMe()
+    }
+  }, [accessToken])
+
+  const loginWithWallet = async (wallet: string, signature: string, nonce: string) => {
+    const data = await walletLogin({ wallet, signature, nonce })
     tokenStore.setTokens(data.access, data.refresh)
-    tokenStore.setUsername(user)
     setAccessToken(data.access)
-    setUsername(user)
+    if (data.user.wallet) tokenStore.setWallet(data.user.wallet)
+    await refreshMe()
+  }
+
+  const selectActiveOrg = async (orgId: number) => {
+    await setActiveOrgRequest(orgId)
+    tokenStore.setActiveOrgId(String(orgId))
+    await refreshMe()
   }
 
   const logout = () => {
     tokenStore.clearTokens()
-    tokenStore.clearUsername()
+    tokenStore.clearWallet()
+    tokenStore.clearActiveOrgId()
     setAccessToken(null)
-    setUsername(null)
+    setMe(null)
   }
 
   const value = useMemo(
     () => ({
       isAuthenticated: Boolean(accessToken),
-      username,
-      login,
+      me,
+      loadingMe,
+      loginWithWallet,
+      refreshMe,
+      selectActiveOrg,
       logout,
     }),
-    [accessToken, username],
+    [accessToken, me, loadingMe],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

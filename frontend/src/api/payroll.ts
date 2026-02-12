@@ -15,8 +15,8 @@ export const createSchedule = async (payload: SchedulePayload): Promise<Schedule
   return response.data
 }
 
-export const listSchedules = async (orgId: string): Promise<Schedule[]> => {
-  const response = await api.get<Schedule[]>('/api/payroll/schedules/', { params: { org_id: orgId } })
+export const listSchedules = async (): Promise<Schedule[]> => {
+  const response = await api.get<Schedule[]>('/api/payroll/schedules/')
   return response.data
 }
 
@@ -31,18 +31,13 @@ export const toggleSchedule = async (
   return response.data
 }
 
-export const listRuns = async (orgId: string): Promise<PayrollRun[]> => {
-  const response = await api.get<PayrollRun[]>('/api/payroll/runs/', { params: { org_id: orgId } })
+export const listRuns = async (): Promise<PayrollRun[]> => {
+  const response = await api.get<PayrollRun[]>('/api/payroll/runs/')
   return response.data
 }
 
-/**
- * Backend endpoint is: POST /api/payroll/runs/create/
- * Your backend create_run expects: { org_id, payroll_id }
- * So we wire it exactly.
- */
-export const createRun = async (payload: { org_id: string; payroll_id: number }): Promise<PayrollRun> => {
-  const response = await api.post<PayrollRun>('/api/payroll/runs/create/', payload)
+export const createRun = async (payload?: { claim_window_days?: number }): Promise<PayrollRun> => {
+  const response = await api.post<PayrollRun>('/api/payroll/runs/create/', payload ?? {})
   return response.data
 }
 

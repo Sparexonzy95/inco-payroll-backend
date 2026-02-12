@@ -1,29 +1,52 @@
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { getWalletNonce } from '../api/auth'
 import { useAuth } from '../auth/AuthProvider'
 import Card from '../components/Card'
-import FormField from '../components/FormField'
+
+declare global {
+  interface Window {
+    ethereum?: {
+      request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>
+    }
+  }
+}
 
 const Login = () => {
-  const { login } = useAuth()
+  const { loginWithWallet, me } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   const from = (location.state as { from?: Location })?.from?.pathname ?? '/'
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    setError(null)
+  const handleWalletLogin = async () => {
+    if (!window.ethereum) {
+      setError('No wallet provider found. Install MetaMask or another EVM wallet.')
+      return
+    }
+
     setLoading(true)
+    setError(null)
+
     try {
-      await login(username, password)
-      navigate(from, { replace: true })
-    } catch (err) {
-      setError('Login failed. Check your credentials and try again.')
+      const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[]
+      const wallet = accounts?.[0]
+      if (!wallet) {
+        throw new Error('No wallet account selected.')
+      }
+
+      const nonceResponse = await getWalletNonce(wallet)
+      const signature = (await window.ethereum.request({
+        method: 'personal_sign',
+        params: [nonceResponse.message, wallet],
+      })) as string
+
+      await loginWithWallet(wallet, signature, nonceResponse.nonce)
+      navigate(me?.active_org_id ? from : '/org-select', { replace: true })
+    } catch {
+      setError('Wallet login failed. Please retry the sign-in flow.')
     } finally {
       setLoading(false)
     }
@@ -31,31 +54,14 @@ const Login = () => {
 
   return (
     <div className="centered">
-      <Card title="Employer Login">
-        <form onSubmit={handleSubmit} className="stack">
-          <FormField label="Username">
-            <input
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              type="text"
-              placeholder="admin"
-              required
-            />
-          </FormField>
-          <FormField label="Password">
-            <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              placeholder="••••••••"
-              required
-            />
-          </FormField>
+      <Card title="Wallet Login">
+        <div className="stack">
+          <p className="muted">Connect your wallet and sign the nonce challenge to receive JWT tokens.</p>
           {error ? <div className="error-banner">{error}</div> : null}
-          <button className="button" type="submit" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign in'}
+          <button className="button" type="button" disabled={loading} onClick={handleWalletLogin}>
+            {loading ? 'Signing in...' : 'Connect wallet'}
           </button>
-        </form>
+        </div>
       </Card>
     </div>
   )
