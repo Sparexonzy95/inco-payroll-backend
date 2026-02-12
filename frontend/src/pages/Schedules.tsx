@@ -1,17 +1,15 @@
 import { useEffect, useState } from 'react'
+import { createSchedule, listSchedules, toggleSchedule } from '../api/payroll'
+import type { Schedule, SchedulePayload, ScheduleType } from '../api/types'
 import Card from '../components/Card'
 import FormField from '../components/FormField'
 import Table from '../components/Table'
-import { createSchedule, listSchedules, toggleSchedule } from '../api/payroll'
-import type { Schedule, SchedulePayload, ScheduleType } from '../api/types'
 import { formatDateTime } from '../utils/format'
 import { validateSchedulePayload } from '../utils/validators'
-import { tokenStore } from '../auth/tokenStore'
 
 const scheduleTypes: ScheduleType[] = ['instant', 'daily', 'weekly', 'monthly', 'yearly']
 
 const Schedules = () => {
-  const [orgId, setOrgId] = useState(tokenStore.getOrgId() ?? '')
   const [name, setName] = useState('')
   const [scheduleType, setScheduleType] = useState<ScheduleType>('instant')
   const [timeOfDay, setTimeOfDay] = useState('09:00')
@@ -24,14 +22,13 @@ const Schedules = () => {
   const [error, setError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
-  const loadSchedules = async (currentOrgId = orgId) => {
-    if (!currentOrgId) return
+  const loadSchedules = async () => {
     setLoading(true)
     setError(null)
     try {
-      const data = await listSchedules(currentOrgId)
+      const data = await listSchedules()
       setSchedules(data)
-    } catch (err) {
+    } catch {
       setError('Failed to load schedules.')
     } finally {
       setLoading(false)
@@ -39,16 +36,12 @@ const Schedules = () => {
   }
 
   useEffect(() => {
-    if (orgId) {
-      tokenStore.setOrgId(orgId)
-      void loadSchedules(orgId)
-    }
-  }, [orgId])
+    void loadSchedules()
+  }, [])
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
     const payload: SchedulePayload = {
-      org_id: orgId,
       name,
       schedule_type: scheduleType,
       time_of_day: scheduleType === 'instant' ? undefined : timeOfDay,
@@ -68,7 +61,7 @@ const Schedules = () => {
       await createSchedule(payload)
       setName('')
       await loadSchedules()
-    } catch (err) {
+    } catch {
       setError('Unable to create schedule. Check the form values.')
     } finally {
       setLoading(false)
@@ -80,7 +73,7 @@ const Schedules = () => {
     try {
       await toggleSchedule(schedule.id, { enabled: !schedule.enabled })
       await loadSchedules()
-    } catch (err) {
+    } catch {
       setError('Unable to toggle schedule.')
     }
   }
@@ -97,9 +90,6 @@ const Schedules = () => {
       <div className="grid two">
         <Card title="Create schedule">
           <form onSubmit={handleSubmit} className="stack">
-            <FormField label="Organization ID" error={fieldErrors.org_id}>
-              <input value={orgId} onChange={(event) => setOrgId(event.target.value)} required />
-            </FormField>
             <FormField label="Schedule name" error={fieldErrors.name}>
               <input value={name} onChange={(event) => setName(event.target.value)} required />
             </FormField>
@@ -124,37 +114,20 @@ const Schedules = () => {
             ) : null}
             {scheduleType === 'monthly' ? (
               <FormField label="Day of month" error={fieldErrors.day_of_month}>
-                <input
-                  value={dayOfMonth}
-                  onChange={(event) => setDayOfMonth(event.target.value)}
-                  type="number"
-                  min={1}
-                  max={31}
-                />
+                <input value={dayOfMonth} onChange={(event) => setDayOfMonth(event.target.value)} type="number" min={1} max={31} />
               </FormField>
             ) : null}
             {scheduleType === 'yearly' ? (
               <>
                 <FormField label="Month of year" error={fieldErrors.month_of_year}>
-                  <input
-                    value={monthOfYear}
-                    onChange={(event) => setMonthOfYear(event.target.value)}
-                    type="number"
-                    min={1}
-                    max={12}
-                  />
+                  <input value={monthOfYear} onChange={(event) => setMonthOfYear(event.target.value)} type="number" min={1} max={12} />
                 </FormField>
                 <FormField label="Day of year" error={fieldErrors.day_of_year}>
-                  <input
-                    value={dayOfYear}
-                    onChange={(event) => setDayOfYear(event.target.value)}
-                    type="number"
-                    min={1}
-                    max={31}
-                  />
+                  <input value={dayOfYear} onChange={(event) => setDayOfYear(event.target.value)} type="number" min={1} max={31} />
                 </FormField>
               </>
             ) : null}
+
             {error ? <div className="error-banner">{error}</div> : null}
             <button className="button" type="submit" disabled={loading}>
               {loading ? 'Saving...' : 'Create schedule'}
@@ -162,29 +135,16 @@ const Schedules = () => {
           </form>
         </Card>
 
-        <Card title="Schedule list">
-          {loading ? <p>Loading schedules...</p> : null}
-          <Table headers={[
-            'ID',
-            'Name',
-            'Type',
-            'Next run',
-            'Enabled',
-            'Actions',
-          ]}>
+        <Card title="Schedules">
+          <Table headers={['Name', 'Type', 'Next run', 'Enabled', 'Actions']}>
             {schedules.map((schedule) => (
               <tr key={schedule.id}>
-                <td>{schedule.id}</td>
                 <td>{schedule.name}</td>
                 <td>{schedule.schedule_type}</td>
                 <td>{formatDateTime(schedule.next_run_at)}</td>
                 <td>{schedule.enabled ? 'Yes' : 'No'}</td>
                 <td>
-                  <button
-                    className="button small"
-                    type="button"
-                    onClick={() => handleToggle(schedule)}
-                  >
+                  <button className="button small secondary" type="button" onClick={() => handleToggle(schedule)}>
                     {schedule.enabled ? 'Disable' : 'Enable'}
                   </button>
                 </td>

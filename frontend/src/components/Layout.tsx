@@ -1,4 +1,4 @@
-import { ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
 import Nav from './Nav'
 import { useAuth } from '../auth/AuthProvider'

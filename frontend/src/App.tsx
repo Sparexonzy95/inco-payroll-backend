@@ -1,16 +1,17 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
-import Layout from './components/Layout'
 import { AuthProvider } from './auth/AuthProvider'
 import RequireAuth from './auth/RequireAuth'
-import Login from './pages/Login'
-import EmployerDashboard from './pages/EmployerDashboard'
-import Schedules from './pages/Schedules'
-import Runs from './pages/Runs'
-import RunDetail from './pages/RunDetail'
-import CreateRun from './pages/CreateRun'
+import Layout from './components/Layout'
 import CommitRun from './pages/CommitRun'
-import TxHelper from './pages/TxHelper'
+import CreateRun from './pages/CreateRun'
 import EmployeeClaim from './pages/EmployeeClaim'
+import EmployerDashboard from './pages/EmployerDashboard'
+import Login from './pages/Login'
+import OrgSelect from './pages/OrgSelect'
+import RunDetail from './pages/RunDetail'
+import Runs from './pages/Runs'
+import Schedules from './pages/Schedules'
+import TxHelper from './pages/TxHelper'
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route element={<RequireAuth />}>
+              <Route path="/org-select" element={<OrgSelect />} />
               <Route path="/" element={<EmployerDashboard />} />
               <Route path="/schedules" element={<Schedules />} />
               <Route path="/runs" element={<Runs />} />

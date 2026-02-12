@@ -1,5 +1,38 @@
 export type ScheduleType = 'instant' | 'daily' | 'weekly' | 'monthly' | 'yearly'
 
+export interface OrgMembership {
+  id: number
+  name: string
+  role: string
+}
+
+export interface MeResponse {
+  user_id: number
+  wallet: string | null
+  roles: string[]
+  active_org_id: number | null
+  orgs: OrgMembership[]
+}
+
+export interface WalletNonceResponse {
+  wallet: string
+  nonce: string
+  message: string
+}
+
+export interface WalletLoginResponse {
+  access: string
+  refresh: string
+  user: {
+    id: number
+    username: string
+    wallet: string | null
+    roles: string[]
+    orgs: OrgMembership[]
+    active_org_id: number | null
+  }
+}
+
 export interface Schedule {
   id: number
   name: string
@@ -15,7 +48,6 @@ export interface Schedule {
 }
 
 export interface SchedulePayload {
-  org_id: string
   name: string
   schedule_type: ScheduleType
   time_of_day?: string

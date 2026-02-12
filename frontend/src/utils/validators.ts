@@ -1,12 +1,8 @@
-import type { SchedulePayload } from "../api/types";
-
+import type { SchedulePayload } from '../api/types'
 
 export const validateSchedulePayload = (payload: SchedulePayload) => {
   const errors: Record<string, string> = {}
 
-  if (!payload.org_id) {
-    errors.org_id = 'Organization ID is required.'
-  }
   if (!payload.name) {
     errors.name = 'Schedule name is required.'
   }

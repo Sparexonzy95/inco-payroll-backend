@@ -1,26 +1,24 @@
 import base64
 import os
 from datetime import time as dtime
-from payroll.id_utils import generate_payroll_id
+
+from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.utils import timezone
+from eth_utils import to_checksum_address
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
-from eth_utils import to_checksum_address
 from web3 import Web3
 
-from orgs.models import Organization
-from payroll.models import PayrollSchedule, PayrollRun, PayrollClaim, Employee
-
-from payroll.schedule_utils import _local_now, next_daily, next_weekly, next_monthly, next_yearly
-from payroll.merkle import leaf_hash, build_merkle_tree, merkle_root, merkle_proof
-
-from chain.verify import (
-    receipt_has_private_transfer_to_vault,
-    receipt_has_payroll_created,
-    receipt_has_claimed,
-)
+from accounts.models import UserProfile
+from chain.verify import receipt_has_payroll_created, receipt_has_private_transfer_to_vault
+from orgs.models import Membership
+from payroll.id_utils import generate_payroll_id
+from payroll.merkle import build_merkle_tree, leaf_hash, merkle_proof, merkle_root
+from payroll.models import Employee, PayrollClaim, PayrollRun, PayrollSchedule
+from payroll.permissions import EMPLOYEE_ROLES, EMPLOYER_ROLES
+from payroll.schedule_utils import _local_now, next_daily, next_monthly, next_weekly, next_yearly
 
 RPC = os.getenv("BASE_SEPOLIA_RPC_URL", "https://sepolia.base.org")
 PAYROLL_VAULT = os.getenv("PAYROLL_VAULT")
@@ -83,15 +81,65 @@ def _compute_initial_next_run(stype, tod, weekday=None, dom=None, moy=None, doy=
     return None
 
 
+def _user_role_for_org(user, org_id):
+    if Membership.objects.filter(user=user, org_id=org_id, role="owner").exists():
+        return "owner"
+    membership = Membership.objects.filter(user=user, org_id=org_id).first()
+    if membership:
+        return membership.role
+    return None
+
+
+def _active_org_for_user(user):
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    if not profile.active_org_id:
+        return None, _json_error("No active org selected. Call /api/auth/set-active-org/ first.", status=400)
+
+    role = _user_role_for_org(user, profile.active_org_id)
+    if role is None:
+        return None, _json_error("You are not a member of your active organization", status=403)
+
+    return profile.active_org, None
+
+
+def _require_employer_org(user):
+    org, error = _active_org_for_user(user)
+    if error:
+        return None, None, error
+
+    role = _user_role_for_org(user, org.id)
+    if role not in EMPLOYER_ROLES:
+        return None, None, _json_error("Employer role required for this action", status=403)
+
+    return org, role, None
+
+
+def _require_run_in_active_org(user, run_id: int):
+    org, _, error = _require_employer_org(user)
+    if error:
+        return None, None, error
+
+    run = PayrollRun.objects.filter(id=run_id).first()
+    if not run:
+        return None, None, _json_error("Run not found", status=404)
+    if run.org_id != org.id:
+        return None, None, _json_error("Run does not belong to active org", status=403)
+
+    return org, run, None
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_schedule(request):
-    org_id = request.data.get("org_id")
+    org, _, error = _require_employer_org(request.user)
+    if error:
+        return error
+
     name = request.data.get("name")
     schedule_type = request.data.get("schedule_type")
 
-    if not org_id or not name or not schedule_type:
-        return _json_error("org_id, name, schedule_type are required")
+    if not name or not schedule_type:
+        return _json_error("name and schedule_type are required")
 
     if schedule_type not in ["instant", "daily", "weekly", "monthly", "yearly"]:
         return _json_error("Invalid schedule_type")
@@ -113,14 +161,13 @@ def create_schedule(request):
     if schedule_type == "yearly" and (month_of_year is None or day_of_year is None):
         return _json_error("month_of_year and day_of_year are required for yearly schedule")
 
-    org = Organization.objects.get(id=org_id)
-
     next_run = _compute_initial_next_run(
-        schedule_type, tod,
+        schedule_type,
+        tod,
         weekday=int(weekday) if weekday is not None else None,
         dom=int(day_of_month) if day_of_month is not None else None,
         moy=int(month_of_year) if month_of_year is not None else None,
-        doy=int(day_of_year) if day_of_year is not None else None
+        doy=int(day_of_year) if day_of_year is not None else None,
     )
 
     sched = PayrollSchedule.objects.create(
@@ -133,46 +180,52 @@ def create_schedule(request):
         month_of_year=int(month_of_year) if month_of_year is not None else None,
         day_of_year=int(day_of_year) if day_of_year is not None else None,
         enabled=True,
-        next_run_at=next_run
+        next_run_at=next_run,
     )
 
-    return Response({
-        "id": sched.id,
-        "name": sched.name,
-        "schedule_type": sched.schedule_type,
-        "next_run_at": sched.next_run_at,
-        "enabled": sched.enabled
-    })
+    return Response({"id": sched.id, "name": sched.name, "schedule_type": sched.schedule_type, "next_run_at": sched.next_run_at, "enabled": sched.enabled})
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_schedules(request):
-    org_id = request.query_params.get("org_id")
-    if not org_id:
-        return _json_error("org_id is required")
+    org, _, error = _require_employer_org(request.user)
+    if error:
+        return error
 
-    qs = PayrollSchedule.objects.filter(org_id=org_id).order_by("-created_at")
-    return Response([{
-        "id": s.id,
-        "name": s.name,
-        "schedule_type": s.schedule_type,
-        "time_of_day": s.time_of_day.isoformat() if s.time_of_day else None,
-        "weekday": s.weekday,
-        "day_of_month": s.day_of_month,
-        "month_of_year": s.month_of_year,
-        "day_of_year": s.day_of_year,
-        "next_run_at": s.next_run_at,
-        "enabled": s.enabled,
-        "created_at": s.created_at,
-    } for s in qs])
+    qs = PayrollSchedule.objects.filter(org=org).order_by("-created_at")
+    return Response([
+        {
+            "id": s.id,
+            "name": s.name,
+            "schedule_type": s.schedule_type,
+            "time_of_day": s.time_of_day.isoformat() if s.time_of_day else None,
+            "weekday": s.weekday,
+            "day_of_month": s.day_of_month,
+            "month_of_year": s.month_of_year,
+            "day_of_year": s.day_of_year,
+            "next_run_at": s.next_run_at,
+            "enabled": s.enabled,
+            "created_at": s.created_at,
+        }
+        for s in qs
+    ])
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def toggle_schedule(request, schedule_id: int):
+    org, _, error = _require_employer_org(request.user)
+    if error:
+        return error
+
+    sched = PayrollSchedule.objects.filter(id=schedule_id).first()
+    if not sched:
+        return _json_error("Schedule not found", status=404)
+    if sched.org_id != org.id:
+        return _json_error("Schedule does not belong to active org", status=403)
+
     enabled = bool(request.data.get("enabled", True))
-    sched = PayrollSchedule.objects.get(id=schedule_id)
     sched.enabled = enabled
     sched.save(update_fields=["enabled"])
     return Response({"id": sched.id, "enabled": sched.enabled})
@@ -180,16 +233,20 @@ def toggle_schedule(request, schedule_id: int):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def create_run_instant(request):
-    _require_env()
+def create_run(request):
+    try:
+        _require_env()
+    except RuntimeError as ex:
+        return _json_error(str(ex))
 
-    org_id = request.data.get("org_id")
-    claim_window_days = int(request.data.get("claim_window_days", 14))
+    org, _, error = _require_employer_org(request.user)
+    if error:
+        return error
 
-    if not org_id:
-        return _json_error("org_id is required")
-
-    org = Organization.objects.get(id=org_id)
+    try:
+        claim_window_days = int(request.data.get("claim_window_days", 14))
+    except Exception:
+        return _json_error("claim_window_days must be an integer")
 
     employees = Employee.objects.filter(org=org, active=True).order_by("wallet")
     total = employees.count()
@@ -198,20 +255,22 @@ def create_run_instant(request):
 
     now = timezone.now()
     close_at = now + timezone.timedelta(days=claim_window_days)
-
     payroll_id = generate_payroll_id()
 
-    run = PayrollRun.objects.create(
-        org=org,
-        payroll_id=payroll_id,
-        token=_norm_addr(CUSDC),
-        vault=_norm_addr(PAYROLL_VAULT),
-        total=total,
-        total_amount_units=sum(int(e.salary_units) for e in employees),
-        status="draft",
-        claim_window_days=claim_window_days,
-        close_at=close_at,
-    )
+    try:
+        run = PayrollRun.objects.create(
+            org=org,
+            payroll_id=payroll_id,
+            token=_norm_addr(CUSDC),
+            vault=_norm_addr(PAYROLL_VAULT),
+            total=total,
+            total_amount_units=sum(int(e.salary_units) for e in employees),
+            status="draft",
+            claim_window_days=claim_window_days,
+            close_at=close_at,
+        )
+    except (ValidationError, ValueError) as ex:
+        return _json_error(str(ex))
 
     for idx, emp in enumerate(employees):
         PayrollClaim.objects.create(
@@ -240,89 +299,82 @@ def create_run_instant(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_runs(request):
-    org_id = request.query_params.get("org_id")
-    if not org_id:
-        return _json_error("org_id is required")
+    org, _, error = _require_employer_org(request.user)
+    if error:
+        return error
 
-    qs = PayrollRun.objects.filter(org_id=org_id).order_by("-created_at")
+    qs = PayrollRun.objects.filter(org=org).order_by("-created_at")
 
-    return Response([{
-        "id": r.id,
-        "payroll_id": str(r.payroll_id),
-        "token": r.token,
-        "vault": r.vault,
-        "merkle_root": r.merkle_root,
-        "total": r.total,
-        "total_amount_units": int(r.total_amount_units),
-        "status": r.status,
-        "create_tx_hash": r.create_tx_hash,
-        "fund_tx_hash": r.fund_tx_hash,
-        "claim_window_days": r.claim_window_days,
-        "close_at": r.close_at,
-        "created_at": r.created_at,
-    } for r in qs])
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def runs_due_to_commit(request):
-    org_id = request.query_params.get("org_id")
-    if not org_id:
-        return _json_error("org_id is required")
-
-    qs = PayrollRun.objects.filter(org_id=org_id, status="draft").order_by("created_at")
-
-    return Response([{
-        "id": r.id,
-        "payroll_id": str(r.payroll_id),
-        "total": r.total,
-        "total_amount_units": int(r.total_amount_units),
-        "created_at": r.created_at,
-        "close_at": r.close_at,
-    } for r in qs])
+    return Response([
+        {
+            "id": r.id,
+            "payroll_id": str(r.payroll_id),
+            "token": r.token,
+            "vault": r.vault,
+            "merkle_root": r.merkle_root,
+            "total": r.total,
+            "total_amount_units": int(r.total_amount_units),
+            "status": r.status,
+            "create_tx_hash": r.create_tx_hash,
+            "fund_tx_hash": r.fund_tx_hash,
+            "claim_window_days": r.claim_window_days,
+            "close_at": r.close_at,
+            "created_at": r.created_at,
+        }
+        for r in qs
+    ])
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_run_claims(request, run_id: int):
-    run = PayrollRun.objects.get(id=run_id)
+    org, run, error = _require_run_in_active_org(request.user, run_id)
+    if error:
+        return error
+
     claims = PayrollClaim.objects.filter(run=run).order_by("index")
 
     data = []
     for c in claims:
         salary_units = None
         try:
-            emp = Employee.objects.get(org=run.org, wallet__iexact=c.employee_wallet)
+            emp = Employee.objects.get(org=org, wallet__iexact=c.employee_wallet)
             salary_units = int(emp.salary_units)
         except Employee.DoesNotExist:
             pass
 
-        data.append({
-            "index": c.index,
-            "employee_wallet": _norm_addr(c.employee_wallet),
-            "status": c.status,
-            "salary_units": salary_units,
-            "leaf": c.leaf,
-            "has_ciphertext": bool(c.net_ciphertext_b64),
-            "claim_tx_hash": c.claim_tx_hash,
-            "claimed_at": c.claimed_at,
-        })
+        data.append(
+            {
+                "index": c.index,
+                "employee_wallet": _norm_addr(c.employee_wallet),
+                "status": c.status,
+                "salary_units": salary_units,
+                "leaf": c.leaf,
+                "has_ciphertext": bool(c.net_ciphertext_b64),
+                "claim_tx_hash": c.claim_tx_hash,
+                "claimed_at": c.claimed_at,
+            }
+        )
 
-    return Response({
-        "run_id": run.id,
-        "payroll_id": str(run.payroll_id),
-        "status": run.status,
-        "merkle_root": run.merkle_root,
-        "total": run.total,
-        "total_amount_units": int(run.total_amount_units),
-        "claims": data,
-    })
+    return Response(
+        {
+            "run_id": run.id,
+            "payroll_id": str(run.payroll_id),
+            "status": run.status,
+            "merkle_root": run.merkle_root,
+            "total": run.total,
+            "total_amount_units": int(run.total_amount_units),
+            "claims": data,
+        }
+    )
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def commit_run(request, run_id: int):
-    run = PayrollRun.objects.get(id=run_id)
+    _, run, error = _require_run_in_active_org(request.user, run_id)
+    if error:
+        return error
 
     if run.status != "draft":
         return _json_error(f"Run status must be draft, got {run.status}")
@@ -331,16 +383,13 @@ def commit_run(request, run_id: int):
     if not isinstance(items, list) or len(items) == 0:
         return _json_error("items must be a non-empty list")
 
-    # Must commit exactly all employees in the run
     claims_qs = PayrollClaim.objects.filter(run=run).order_by("index")
     claims = list(claims_qs)
 
     if len(items) != len(claims):
         return _json_error(f"items length must equal run total ({len(claims)})")
 
-    # Build map by wallet for safer matching
     claim_by_wallet = {c.employee_wallet.lower(): c for c in claims}
-
     leaves = [None] * len(claims)
 
     for item in items:
@@ -381,7 +430,6 @@ def commit_run(request, run_id: int):
     tree = build_merkle_tree(leaves)
     root = merkle_root(tree)
 
-    # Attach proofs
     for c in claims:
         proof_bytes = merkle_proof(tree, c.index)
         c.proof = ["0x" + p.hex() for p in proof_bytes]
@@ -391,22 +439,35 @@ def commit_run(request, run_id: int):
     run.status = "committed"
     run.save(update_fields=["merkle_root", "status"])
 
-    return Response({
-        "run_id": run.id,
-        "payroll_id": str(run.payroll_id),
-        "merkle_root": run.merkle_root,
-        "total": run.total,
-        "status": run.status,
-    })
+    return Response({"run_id": run.id, "payroll_id": str(run.payroll_id), "merkle_root": run.merkle_root, "total": run.total, "status": run.status})
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_claim(request, payroll_id: int, wallet: str):
-    wallet = _norm_addr(wallet)
+    try:
+        normalized_wallet = _norm_addr(wallet)
+    except Exception as ex:
+        return _json_error(str(ex))
 
-    run = PayrollRun.objects.get(payroll_id=payroll_id)
-    claim = PayrollClaim.objects.get(run=run, employee_wallet__iexact=wallet)
+    run = PayrollRun.objects.filter(payroll_id=payroll_id).first()
+    if not run:
+        return _json_error("Run not found", status=404)
+
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    user_wallet = (profile.wallet or "").lower()
+    has_employee_claim_access = user_wallet == normalized_wallet.lower()
+
+    role = _user_role_for_org(request.user, run.org_id)
+    has_employer_access = role in EMPLOYER_ROLES
+    has_employee_role = role in EMPLOYEE_ROLES
+
+    if not has_employer_access and not (has_employee_role and has_employee_claim_access):
+        return _json_error("Not allowed to access this claim", status=403)
+
+    claim = PayrollClaim.objects.filter(run=run, employee_wallet__iexact=normalized_wallet).first()
+    if not claim:
+        return _json_error("Claim not found", status=404)
 
     if run.status not in ["open", "funded"]:
         return _json_error(f"Run not open yet. status={run.status}", status=400)
@@ -425,7 +486,9 @@ def get_claim(request, payroll_id: int, wallet: str):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def tx_create_payroll(request, run_id: int):
-    run = PayrollRun.objects.get(id=run_id)
+    _, run, error = _require_run_in_active_org(request.user, run_id)
+    if error:
+        return error
 
     if run.status != "committed":
         return _json_error(f"Run must be committed before createPayroll. status={run.status}")
@@ -436,14 +499,17 @@ def tx_create_payroll(request, run_id: int):
         "function": "createPayroll(uint256,address,bytes32,uint256)",
         "args": [str(run.payroll_id), run.token, run.merkle_root, str(run.total)],
         "valueWei": "0",
-        "notes": ["Frontend encodes and signs using PayrollVault ABI"]
+        "notes": ["Frontend encodes and signs using PayrollVault ABI"],
     })
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def tx_fund_plan(request, run_id: int):
-    run = PayrollRun.objects.get(id=run_id)
+    _, run, error = _require_run_in_active_org(request.user, run_id)
+    if error:
+        return error
+
     amount_units = int(run.total_amount_units)
 
     if not WRAP_GATEWAY:
@@ -459,14 +525,7 @@ def tx_fund_plan(request, run_id: int):
         "amount_units": amount_units,
         "decimals": 6,
         "plan": [
-            {
-                "step": 1,
-                "action": wrap_note,
-                "contract": WRAP_GATEWAY,
-                "function": "deposit(uint256 amount)",
-                "args": [str(amount_units)],
-                "valueWei": "0"
-            },
+            {"step": 1, "action": wrap_note, "contract": WRAP_GATEWAY, "function": "deposit(uint256 amount)", "args": [str(amount_units)], "valueWei": "0"},
             {
                 "step": 2,
                 "action": "Transfer private cUSDC from employer to PayrollVault using ciphertext",
@@ -474,21 +533,20 @@ def tx_fund_plan(request, run_id: int):
                 "function": "transfer(address to, bytes amountCiphertext)",
                 "args": [run.vault, "<amountCiphertext bytes>"],
                 "valueWei": "<inco_fee_wei>",
-                "notes": ["msg.value must pay inco.getFee() for the ciphertext op"]
-            }
+                "notes": ["msg.value must pay inco.getFee() for the ciphertext op"],
+            },
         ],
-        "notes": ["Frontend should query inco.getFee() using Inco JS and pass it as tx value"]
+        "notes": ["Frontend should query inco.getFee() using Inco JS and pass it as tx value"],
     })
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def record_run_tx(request, run_id: int):
-    """
-    Frontend posts tx hashes after sending transactions.
-    kind: create_payroll | fund_vault
-    """
-    run = PayrollRun.objects.get(id=run_id)
+    _, run, error = _require_run_in_active_org(request.user, run_id)
+    if error:
+        return error
+
     kind = request.data.get("kind")
     tx_hash = request.data.get("tx_hash")
 
@@ -510,10 +568,10 @@ def record_run_tx(request, run_id: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def record_claim_tx(request, run_id: int, index: int):
-    """
-    Frontend posts claim tx hash (employee claim).
-    """
-    run = PayrollRun.objects.get(id=run_id)
+    run = PayrollRun.objects.filter(id=run_id).first()
+    if not run:
+        return _json_error("Run not found", status=404)
+
     tx_hash = request.data.get("tx_hash")
     wallet = request.data.get("wallet")
 
@@ -521,9 +579,23 @@ def record_claim_tx(request, run_id: int, index: int):
         return _json_error("Invalid tx_hash")
     if not wallet:
         return _json_error("wallet is required")
-    wallet = _norm_addr(wallet)
 
-    claim = PayrollClaim.objects.get(run=run, index=index, employee_wallet__iexact=wallet)
+    try:
+        wallet = _norm_addr(wallet)
+    except Exception as ex:
+        return _json_error(str(ex))
+
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    is_owner = _user_role_for_org(request.user, run.org_id) in EMPLOYER_ROLES
+    is_self = (profile.wallet or "").lower() == wallet.lower()
+
+    if not is_owner and not is_self:
+        return _json_error("Not allowed to record claim tx for this wallet", status=403)
+
+    claim = PayrollClaim.objects.filter(run=run, index=index, employee_wallet__iexact=wallet).first()
+    if not claim:
+        return _json_error("Claim not found", status=404)
+
     claim.claim_tx_hash = tx_hash
     claim.save(update_fields=["claim_tx_hash"])
 
@@ -533,13 +605,9 @@ def record_claim_tx(request, run_id: int, index: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def open_run(request, run_id: int):
-    """
-    Verifies both:
-    - createPayroll tx emitted PayrollCreated
-    - fund tx included cUSDC TransferPrivate to vault
-    Then opens run for claims.
-    """
-    run = PayrollRun.objects.get(id=run_id)
+    _, run, error = _require_run_in_active_org(request.user, run_id)
+    if error:
+        return error
 
     if run.status not in ["committed", "onchain_created", "funded"]:
         return _json_error(f"Run not ready. status={run.status}")
@@ -549,7 +617,6 @@ def open_run(request, run_id: int):
     if not run.fund_tx_hash:
         return _json_error("fund_tx_hash missing. Call record_run_tx for fund_vault")
 
-    # Verify createPayroll event
     try:
         create_receipt = w3.eth.get_transaction_receipt(run.create_tx_hash)
     except Exception:
@@ -561,7 +628,6 @@ def open_run(request, run_id: int):
     run.status = "onchain_created"
     run.save(update_fields=["status"])
 
-    # Verify funding event (TransferPrivate to vault)
     try:
         fund_receipt = w3.eth.get_transaction_receipt(run.fund_tx_hash)
     except Exception:
