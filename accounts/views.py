@@ -8,15 +8,14 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from eth_utils import to_checksum_address
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from accounts.models import UserProfile, WalletNonce
-from orgs.models import Membership, Organization
-
+from accounts.models import Employer, UserProfile, WalletNonce
 
 APP_NAME = "Inco Payroll"
+APP_DOMAIN = "localhost"
 
 
 def _json_error(message: str, status: int = 400):
@@ -32,28 +31,31 @@ def _normalize_wallet(wallet: str) -> str:
     return to_checksum_address(wallet)
 
 
-def _membership_payload_for_user(user: User):
-    rows = Membership.objects.filter(user=user).select_related("org")
-    orgs = []
-    roles = set()
-    seen = set()
+def _employer_payload(employer: Employer):
+    return {
+        "id": employer.id,
+        "name": employer.name,
+        "email": employer.email,
+        "wallet_address": employer.wallet_address,
+        "is_active": employer.is_active,
+        "created_at": employer.created_at,
+    }
 
-    for m in rows:
-        roles.add(m.role)
-        if m.org_id in seen:
-            continue
-        seen.add(m.org_id)
-        orgs.append({"id": m.org_id, "name": m.org.name, "role": m.role})
 
-    owned = Organization.objects.filter(owner=user).values("id", "name")
-    for org in owned:
-        roles.add("owner")
-        if org["id"] in seen:
-            continue
-        seen.add(org["id"])
-        orgs.append({"id": org["id"], "name": org["name"], "role": "owner"})
+def _me_payload(wallet: str):
+    employer = Employer.objects.filter(wallet_address__iexact=wallet).first() if wallet else None
+    if employer and employer.is_active:
+        return {
+            "wallet": wallet,
+            "is_employer_registered": True,
+            "employer": _employer_payload(employer),
+        }
 
-    return sorted(list(roles)), orgs
+    return {
+        "wallet": wallet,
+        "is_employer_registered": False,
+        "employer": None,
+    }
 
 
 @api_view(["POST"])
@@ -70,7 +72,7 @@ def wallet_nonce(request):
 
     message = (
         f"{APP_NAME} wallet login\n"
-        f"domain: localhost\n"
+        f"domain: {APP_DOMAIN}\n"
         f"wallet: {wallet}\n"
         f"nonce: {nonce}\n"
         f"issuedAt: {issued_at}\n"
@@ -78,7 +80,6 @@ def wallet_nonce(request):
     )
 
     WalletNonce.objects.create(wallet=wallet, nonce=nonce, message=message)
-
     return Response({"wallet": wallet, "nonce": nonce, "message": message})
 
 
@@ -92,57 +93,58 @@ def wallet_login(request):
 
     signature = request.data.get("signature")
     nonce = request.data.get("nonce")
-
     if not signature or not nonce:
         return _json_error("wallet, nonce, and signature are required")
 
-    nonce_row = WalletNonce.objects.filter(
-        wallet=wallet,
-        nonce=nonce,
-        consumed_at__isnull=True,
-    ).order_by("-issued_at").first()
-
-    if not nonce_row:
-        return _json_error("Invalid or already used nonce", status=400)
-
-    try:
-        recovered = Account.recover_message(
-            encode_defunct(text=nonce_row.message),
-            signature=signature,
-        )
-        recovered = _normalize_wallet(recovered)
-    except Exception:
-        return _json_error("Signature verification failed", status=400)
-
-    if recovered.lower() != wallet.lower():
-        return _json_error("Signature does not match wallet", status=400)
-
     with transaction.atomic():
+        nonce_row = (
+            WalletNonce.objects.select_for_update()
+            .filter(wallet=wallet, nonce=nonce, consumed_at__isnull=True)
+            .order_by("-issued_at")
+            .first()
+        )
+        if not nonce_row:
+            return _json_error("Invalid or already used nonce", status=400)
+
+        try:
+            recovered = Account.recover_message(
+                encode_defunct(text=nonce_row.message),
+                signature=signature,
+            )
+            recovered = _normalize_wallet(recovered)
+        except Exception:
+            return _json_error("Signature verification failed", status=400)
+
+        if recovered.lower() != wallet.lower():
+            return _json_error("Signature does not match wallet", status=400)
+
         nonce_row.consumed_at = django_timezone.now()
         nonce_row.save(update_fields=["consumed_at"])
 
         username = f"wallet_{wallet.lower()}"
         user, _ = User.objects.get_or_create(username=username)
         profile, _ = UserProfile.objects.get_or_create(user=user)
-        if not profile.wallet:
-            profile.wallet = wallet
-            profile.save(update_fields=["wallet"])
+        changed = False
+        if profile.wallet_address != wallet:
+            profile.wallet_address = wallet
+            changed = True
+
+        employer = Employer.objects.filter(wallet_address__iexact=wallet).first()
+        if employer and profile.employer_id != employer.id:
+            profile.employer = employer
+            changed = True
+
+        if changed:
+            profile.save()
 
     refresh = RefreshToken.for_user(user)
-    roles, orgs = _membership_payload_for_user(user)
 
+    response_payload = _me_payload(wallet)
     return Response(
         {
             "access": str(refresh.access_token),
             "refresh": str(refresh),
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "wallet": profile.wallet,
-                "roles": roles,
-                "orgs": orgs,
-                "active_org_id": profile.active_org_id,
-            },
+            "user": response_payload,
         }
     )
 
@@ -151,35 +153,39 @@ def wallet_login(request):
 @permission_classes([IsAuthenticated])
 def me(request):
     profile, _ = UserProfile.objects.get_or_create(user=request.user)
-    roles, orgs = _membership_payload_for_user(request.user)
-
-    return Response(
-        {
-            "user_id": request.user.id,
-            "wallet": profile.wallet,
-            "roles": roles,
-            "active_org_id": profile.active_org_id,
-            "orgs": orgs,
-        }
-    )
+    return Response(_me_payload(profile.wallet_address))
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def set_active_org(request):
-    org_id = request.data.get("org_id")
-    if not org_id:
-        return _json_error("org_id is required")
-
-    membership = Membership.objects.filter(user=request.user, org_id=org_id).first()
-    is_owner = Organization.objects.filter(id=org_id, owner=request.user).exists()
-
-    if not membership and not is_owner:
-        return _json_error("You are not a member of this organization", status=403)
-
+def employer_register(request):
     profile, _ = UserProfile.objects.get_or_create(user=request.user)
-    profile.active_org_id = org_id
-    profile.save(update_fields=["active_org"])
+    wallet = profile.wallet_address
+    if not wallet:
+        return _json_error("Wallet not found for authenticated user", status=400)
 
-    role = "owner" if is_owner else membership.role
-    return Response({"org_id": int(org_id), "role": role})
+    name = (request.data.get("name") or "").strip()
+    email = (request.data.get("email") or "").strip().lower()
+    if not name or not email:
+        return _json_error("name and email are required")
+
+    existing_by_email = Employer.objects.filter(email__iexact=email).exclude(wallet_address__iexact=wallet).first()
+    if existing_by_email:
+        return _json_error("email is already in use", status=400)
+
+    employer = Employer.objects.filter(wallet_address__iexact=wallet).first()
+    if employer and not employer.is_active:
+        return _json_error("Employer account is inactive", status=403)
+
+    if employer:
+        employer.name = name
+        employer.email = email
+        employer.save(update_fields=["name", "email"])
+    else:
+        employer = Employer.objects.create(name=name, email=email, wallet_address=wallet)
+
+    if profile.employer_id != employer.id:
+        profile.employer = employer
+        profile.save(update_fields=["employer"])
+
+    return Response(_me_payload(wallet))

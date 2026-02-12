@@ -15,13 +15,12 @@ const Nav = () => {
       <div className="nav-header">
         <h1>Inco Payroll</h1>
         {me?.wallet ? <p className="muted">{me.wallet}</p> : null}
-        {me?.active_org_id ? <p className="muted">Org #{me.active_org_id}</p> : null}
+        {me?.employer?.name ? <p className="muted">{me.employer.name}</p> : null}
       </div>
       <nav className="nav-links">
         <NavLink to="/" end>
           Dashboard
         </NavLink>
-        <NavLink to="/org-select">Select Org</NavLink>
         <NavLink to="/schedules">Schedules</NavLink>
         <NavLink to="/runs">Runs</NavLink>
         <NavLink to="/employee-claim">Employee Claim</NavLink>

@@ -1,24 +1,24 @@
 from django.db import models
 from eth_utils import is_address, to_checksum_address
-from orgs.models import Organization
+from accounts.models import Employer
 
 
 class Employee(models.Model):
-    org = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="employees")
+    employer = models.ForeignKey(Employer, on_delete=models.CASCADE, related_name="employees")
     wallet = models.CharField(max_length=42, db_index=True)
     salary_units = models.BigIntegerField()  # USDC has 6 decimals
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("org", "wallet")
+        unique_together = ("employer", "wallet")
         indexes = [
-            models.Index(fields=["org", "active"]),
-            models.Index(fields=["org", "wallet"]),
+            models.Index(fields=["employer", "active"]),
+            models.Index(fields=["employer", "wallet"]),
         ]
 
     def __str__(self):
-        return f"{self.org_id}:{self.wallet}"
+        return f"{self.employer_id}:{self.wallet}"
 
     def save(self, *args, **kwargs):
         if self.wallet and is_address(self.wallet):
@@ -35,7 +35,7 @@ class PayrollSchedule(models.Model):
         ("yearly", "Yearly"),
     ]
 
-    org = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="payroll_schedules")
+    employer = models.ForeignKey(Employer, on_delete=models.CASCADE, related_name="payroll_schedules")
     name = models.CharField(max_length=120)
     schedule_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
 
@@ -57,11 +57,11 @@ class PayrollSchedule(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["enabled", "next_run_at"]),
-            models.Index(fields=["org", "enabled"]),
+            models.Index(fields=["employer", "enabled"]),
         ]
 
     def __str__(self):
-        return f"{self.org_id} {self.name} {self.schedule_type}"
+        return f"{self.employer_id} {self.name} {self.schedule_type}"
 
 
 class PayrollRun(models.Model):
@@ -74,7 +74,7 @@ class PayrollRun(models.Model):
         ("closed", "Closed"),
     ]
 
-    org = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="payroll_runs")
+    employer = models.ForeignKey(Employer, on_delete=models.CASCADE, related_name="payroll_runs")
 
     # Link runs to schedules (nullable for instant runs)
     schedule = models.ForeignKey(
@@ -109,7 +109,7 @@ class PayrollRun(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["org", "status"]),
+            models.Index(fields=["employer", "status"]),
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["payroll_id"]),
         ]
@@ -122,7 +122,7 @@ class PayrollRun(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.org_id}:{self.payroll_id} ({self.status})"
+        return f"{self.employer_id}:{self.payroll_id} ({self.status})"
 
     def save(self, *args, **kwargs):
         if self.token and is_address(self.token):

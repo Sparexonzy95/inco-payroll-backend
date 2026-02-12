@@ -3,21 +3,25 @@ from django.test import TestCase
 from django.utils import timezone
 from eth_utils import to_checksum_address
 
-from orgs.models import Organization
-from payroll.models import Employee, PayrollSchedule, PayrollRun
+from accounts.models import Employer
+from payroll.models import Employee, PayrollRun, PayrollSchedule
 from payroll.tasks import tick_schedules
 
 
 class TickSchedulesTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="owner", password="pass")
-        self.org = Organization.objects.create(name="Acme", owner=self.user)
+        self.user = User.objects.create_user(username="owner")
+        self.employer = Employer.objects.create(
+            name='Acme',
+            email='acme@example.com',
+            wallet_address=to_checksum_address('0x' + '9' * 40),
+        )
         self.wallets = [
             to_checksum_address("0x" + "1" * 40),
             to_checksum_address("0x" + "2" * 40),
         ]
         for wallet in self.wallets:
-            Employee.objects.create(org=self.org, wallet=wallet, salary_units=100)
+            Employee.objects.create(employer=self.employer, wallet=wallet, salary_units=100)
 
         self.token = to_checksum_address("0x" + "a" * 40)
         self.vault = to_checksum_address("0x" + "b" * 40)
@@ -30,7 +34,7 @@ class TickSchedulesTests(TestCase):
     def test_tick_schedules_creates_single_run(self):
         now = timezone.localtime(timezone.now())
         sched = PayrollSchedule.objects.create(
-            org=self.org,
+            employer=self.employer,
             name="Daily",
             schedule_type="daily",
             time_of_day=now.time(),
@@ -48,7 +52,7 @@ class TickSchedulesTests(TestCase):
     def test_tick_schedules_is_idempotent(self):
         now = timezone.localtime(timezone.now())
         sched = PayrollSchedule.objects.create(
-            org=self.org,
+            employer=self.employer,
             name="Daily",
             schedule_type="daily",
             time_of_day=now.time(),

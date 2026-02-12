@@ -1,17 +1,18 @@
 export type ScheduleType = 'instant' | 'daily' | 'weekly' | 'monthly' | 'yearly'
 
-export interface OrgMembership {
+export interface EmployerProfile {
   id: number
   name: string
-  role: string
+  email: string
+  wallet_address: string
+  is_active: boolean
+  created_at: string
 }
 
 export interface MeResponse {
-  user_id: number
   wallet: string | null
-  roles: string[]
-  active_org_id: number | null
-  orgs: OrgMembership[]
+  is_employer_registered: boolean
+  employer: EmployerProfile | null
 }
 
 export interface WalletNonceResponse {
@@ -24,12 +25,9 @@ export interface WalletLoginResponse {
   access: string
   refresh: string
   user: {
-    id: number
-    username: string
     wallet: string | null
-    roles: string[]
-    orgs: OrgMembership[]
-    active_org_id: number | null
+    is_employer_registered: boolean
+    employer: EmployerProfile | null
   }
 }
 
@@ -78,14 +76,14 @@ export interface PayrollRun {
   created_at?: string
 }
 
-export interface RunClaimItem {
+export interface RunClaim {
   index: number
   employee_wallet: string
   status: string
-  salary_units: number | null
-  leaf: string
-  has_ciphertext: boolean
-  claim_tx_hash?: string | null
+  salary_units?: number | null
+  leaf?: string
+  has_ciphertext?: boolean
+  claim_tx_hash?: string
   claimed_at?: string | null
 }
 
@@ -96,17 +94,17 @@ export interface RunClaimsResponse {
   merkle_root: string
   total: number
   total_amount_units: number
-  claims: RunClaimItem[]
+  claims: RunClaim[]
 }
 
-export interface CommitItem {
+export interface CommitRunItem {
   wallet: string
   net_ciphertext_b64: string
-  encrypted_ref: string
+  encrypted_ref?: string
 }
 
 export interface CommitRunPayload {
-  items: CommitItem[]
+  items: CommitRunItem[]
 }
 
 export interface PayrollClaimResponse {

@@ -3,7 +3,6 @@ import os
 from datetime import time as dtime
 
 from django.core.exceptions import ValidationError
-from django.db.models import Q
 from django.utils import timezone
 from eth_utils import to_checksum_address
 from rest_framework.decorators import api_view, permission_classes
@@ -11,13 +10,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from web3 import Web3
 
-from accounts.models import UserProfile
+from accounts.models import Employer, UserProfile
 from chain.verify import receipt_has_payroll_created, receipt_has_private_transfer_to_vault
-from orgs.models import Membership
 from payroll.id_utils import generate_payroll_id
 from payroll.merkle import build_merkle_tree, leaf_hash, merkle_proof, merkle_root
 from payroll.models import Employee, PayrollClaim, PayrollRun, PayrollSchedule
-from payroll.permissions import EMPLOYEE_ROLES, EMPLOYER_ROLES
 from payroll.schedule_utils import _local_now, next_daily, next_monthly, next_weekly, next_yearly
 
 RPC = os.getenv("BASE_SEPOLIA_RPC_URL", "https://sepolia.base.org")
@@ -81,57 +78,37 @@ def _compute_initial_next_run(stype, tod, weekday=None, dom=None, moy=None, doy=
     return None
 
 
-def _user_role_for_org(user, org_id):
-    if Membership.objects.filter(user=user, org_id=org_id, role="owner").exists():
-        return "owner"
-    membership = Membership.objects.filter(user=user, org_id=org_id).first()
-    if membership:
-        return membership.role
-    return None
-
-
-def _active_org_for_user(user):
+def require_employer(user):
     profile, _ = UserProfile.objects.get_or_create(user=user)
-    if not profile.active_org_id:
-        return None, _json_error("No active org selected. Call /api/auth/set-active-org/ first.", status=400)
+    if not profile.wallet_address:
+        return None, _json_error("Wallet not found for authenticated user", status=403)
 
-    role = _user_role_for_org(user, profile.active_org_id)
-    if role is None:
-        return None, _json_error("You are not a member of your active organization", status=403)
-
-    return profile.active_org, None
-
-
-def _require_employer_org(user):
-    org, error = _active_org_for_user(user)
-    if error:
-        return None, None, error
-
-    role = _user_role_for_org(user, org.id)
-    if role not in EMPLOYER_ROLES:
-        return None, None, _json_error("Employer role required for this action", status=403)
-
-    return org, role, None
+    employer = Employer.objects.filter(wallet_address__iexact=profile.wallet_address).first()
+    if not employer:
+        return None, _json_error("Employer profile not set. Register name and email first.", status=403)
+    if not employer.is_active:
+        return None, _json_error("Employer account is inactive", status=403)
+    return employer, None
 
 
-def _require_run_in_active_org(user, run_id: int):
-    org, _, error = _require_employer_org(user)
+def _require_run_for_employer(user, run_id: int):
+    employer, error = require_employer(user)
     if error:
         return None, None, error
 
     run = PayrollRun.objects.filter(id=run_id).first()
     if not run:
         return None, None, _json_error("Run not found", status=404)
-    if run.org_id != org.id:
-        return None, None, _json_error("Run does not belong to active org", status=403)
+    if run.employer_id != employer.id:
+        return None, None, _json_error("Run does not belong to employer", status=403)
 
-    return org, run, None
+    return employer, run, None
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_schedule(request):
-    org, _, error = _require_employer_org(request.user)
+    employer, error = require_employer(request.user)
     if error:
         return error
 
@@ -171,7 +148,7 @@ def create_schedule(request):
     )
 
     sched = PayrollSchedule.objects.create(
-        org=org,
+        employer=employer,
         name=name,
         schedule_type=schedule_type,
         time_of_day=tod if schedule_type != "instant" else None,
@@ -189,11 +166,11 @@ def create_schedule(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_schedules(request):
-    org, _, error = _require_employer_org(request.user)
+    employer, error = require_employer(request.user)
     if error:
         return error
 
-    qs = PayrollSchedule.objects.filter(org=org).order_by("-created_at")
+    qs = PayrollSchedule.objects.filter(employer=employer).order_by("-created_at")
     return Response([
         {
             "id": s.id,
@@ -215,15 +192,15 @@ def list_schedules(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def toggle_schedule(request, schedule_id: int):
-    org, _, error = _require_employer_org(request.user)
+    employer, error = require_employer(request.user)
     if error:
         return error
 
     sched = PayrollSchedule.objects.filter(id=schedule_id).first()
     if not sched:
         return _json_error("Schedule not found", status=404)
-    if sched.org_id != org.id:
-        return _json_error("Schedule does not belong to active org", status=403)
+    if sched.employer_id != employer.id:
+        return _json_error("Schedule does not belong to employer", status=403)
 
     enabled = bool(request.data.get("enabled", True))
     sched.enabled = enabled
@@ -239,7 +216,7 @@ def create_run(request):
     except RuntimeError as ex:
         return _json_error(str(ex))
 
-    org, _, error = _require_employer_org(request.user)
+    employer, error = require_employer(request.user)
     if error:
         return error
 
@@ -248,7 +225,7 @@ def create_run(request):
     except Exception:
         return _json_error("claim_window_days must be an integer")
 
-    employees = Employee.objects.filter(org=org, active=True).order_by("wallet")
+    employees = Employee.objects.filter(employer=employer, active=True).order_by("wallet")
     total = employees.count()
     if total == 0:
         return _json_error("No active employees")
@@ -259,7 +236,7 @@ def create_run(request):
 
     try:
         run = PayrollRun.objects.create(
-            org=org,
+            employer=employer,
             payroll_id=payroll_id,
             token=_norm_addr(CUSDC),
             vault=_norm_addr(PAYROLL_VAULT),
@@ -284,26 +261,28 @@ def create_run(request):
             status="unclaimed",
         )
 
-    return Response({
-        "run_id": run.id,
-        "payroll_id": str(run.payroll_id),
-        "token": run.token,
-        "vault": run.vault,
-        "total": run.total,
-        "total_amount_units": int(run.total_amount_units),
-        "status": run.status,
-        "close_at": run.close_at,
-    })
+    return Response(
+        {
+            "run_id": run.id,
+            "payroll_id": str(run.payroll_id),
+            "token": run.token,
+            "vault": run.vault,
+            "total": run.total,
+            "total_amount_units": int(run.total_amount_units),
+            "status": run.status,
+            "close_at": run.close_at,
+        }
+    )
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_runs(request):
-    org, _, error = _require_employer_org(request.user)
+    employer, error = require_employer(request.user)
     if error:
         return error
 
-    qs = PayrollRun.objects.filter(org=org).order_by("-created_at")
+    qs = PayrollRun.objects.filter(employer=employer).order_by("-created_at")
 
     return Response([
         {
@@ -328,7 +307,7 @@ def list_runs(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_run_claims(request, run_id: int):
-    org, run, error = _require_run_in_active_org(request.user, run_id)
+    employer, run, error = _require_run_for_employer(request.user, run_id)
     if error:
         return error
 
@@ -338,7 +317,7 @@ def list_run_claims(request, run_id: int):
     for c in claims:
         salary_units = None
         try:
-            emp = Employee.objects.get(org=org, wallet__iexact=c.employee_wallet)
+            emp = Employee.objects.get(employer=employer, wallet__iexact=c.employee_wallet)
             salary_units = int(emp.salary_units)
         except Employee.DoesNotExist:
             pass
@@ -372,7 +351,7 @@ def list_run_claims(request, run_id: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def commit_run(request, run_id: int):
-    _, run, error = _require_run_in_active_org(request.user, run_id)
+    _, run, error = _require_run_for_employer(request.user, run_id)
     if error:
         return error
 
@@ -455,14 +434,8 @@ def get_claim(request, payroll_id: int, wallet: str):
         return _json_error("Run not found", status=404)
 
     profile, _ = UserProfile.objects.get_or_create(user=request.user)
-    user_wallet = (profile.wallet or "").lower()
-    has_employee_claim_access = user_wallet == normalized_wallet.lower()
-
-    role = _user_role_for_org(request.user, run.org_id)
-    has_employer_access = role in EMPLOYER_ROLES
-    has_employee_role = role in EMPLOYEE_ROLES
-
-    if not has_employer_access and not (has_employee_role and has_employee_claim_access):
+    user_wallet = (profile.wallet_address or "").lower()
+    if user_wallet != normalized_wallet.lower():
         return _json_error("Not allowed to access this claim", status=403)
 
     claim = PayrollClaim.objects.filter(run=run, employee_wallet__iexact=normalized_wallet).first()
@@ -472,41 +445,45 @@ def get_claim(request, payroll_id: int, wallet: str):
     if run.status not in ["open", "funded"]:
         return _json_error(f"Run not open yet. status={run.status}", status=400)
 
-    return Response({
-        "payroll_id": str(run.payroll_id),
-        "index": int(claim.index),
-        "token": run.token,
-        "vault": run.vault,
-        "net_ciphertext_b64": claim.net_ciphertext_b64,
-        "encrypted_ref": claim.encrypted_ref,
-        "proof": claim.proof,
-    })
+    return Response(
+        {
+            "payroll_id": str(run.payroll_id),
+            "index": int(claim.index),
+            "token": run.token,
+            "vault": run.vault,
+            "net_ciphertext_b64": claim.net_ciphertext_b64,
+            "encrypted_ref": claim.encrypted_ref,
+            "proof": claim.proof,
+        }
+    )
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def tx_create_payroll(request, run_id: int):
-    _, run, error = _require_run_in_active_org(request.user, run_id)
+    _, run, error = _require_run_for_employer(request.user, run_id)
     if error:
         return error
 
     if run.status != "committed":
         return _json_error(f"Run must be committed before createPayroll. status={run.status}")
 
-    return Response({
-        "chainId": CHAIN_ID,
-        "to": run.vault,
-        "function": "createPayroll(uint256,address,bytes32,uint256)",
-        "args": [str(run.payroll_id), run.token, run.merkle_root, str(run.total)],
-        "valueWei": "0",
-        "notes": ["Frontend encodes and signs using PayrollVault ABI"],
-    })
+    return Response(
+        {
+            "chainId": CHAIN_ID,
+            "to": run.vault,
+            "function": "createPayroll(uint256,address,bytes32,uint256)",
+            "args": [str(run.payroll_id), run.token, run.merkle_root, str(run.total)],
+            "valueWei": "0",
+            "notes": ["Frontend encodes and signs using PayrollVault ABI"],
+        }
+    )
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def tx_fund_plan(request, run_id: int):
-    _, run, error = _require_run_in_active_org(request.user, run_id)
+    _, run, error = _require_run_for_employer(request.user, run_id)
     if error:
         return error
 
@@ -517,33 +494,35 @@ def tx_fund_plan(request, run_id: int):
     else:
         wrap_note = "If employer only has public USDC, call WrapGateway.deposit(amount_units) first."
 
-    return Response({
-        "run_id": run.id,
-        "payroll_id": str(run.payroll_id),
-        "vault": run.vault,
-        "token": run.token,
-        "amount_units": amount_units,
-        "decimals": 6,
-        "plan": [
-            {"step": 1, "action": wrap_note, "contract": WRAP_GATEWAY, "function": "deposit(uint256 amount)", "args": [str(amount_units)], "valueWei": "0"},
-            {
-                "step": 2,
-                "action": "Transfer private cUSDC from employer to PayrollVault using ciphertext",
-                "contract": run.token,
-                "function": "transfer(address to, bytes amountCiphertext)",
-                "args": [run.vault, "<amountCiphertext bytes>"],
-                "valueWei": "<inco_fee_wei>",
-                "notes": ["msg.value must pay inco.getFee() for the ciphertext op"],
-            },
-        ],
-        "notes": ["Frontend should query inco.getFee() using Inco JS and pass it as tx value"],
-    })
+    return Response(
+        {
+            "run_id": run.id,
+            "payroll_id": str(run.payroll_id),
+            "vault": run.vault,
+            "token": run.token,
+            "amount_units": amount_units,
+            "decimals": 6,
+            "plan": [
+                {"step": 1, "action": wrap_note, "contract": WRAP_GATEWAY, "function": "deposit(uint256 amount)", "args": [str(amount_units)], "valueWei": "0"},
+                {
+                    "step": 2,
+                    "action": "Transfer private cUSDC from employer to PayrollVault using ciphertext",
+                    "contract": run.token,
+                    "function": "transfer(address to, bytes amountCiphertext)",
+                    "args": [run.vault, "<amountCiphertext bytes>"],
+                    "valueWei": "<inco_fee_wei>",
+                    "notes": ["msg.value must pay inco.getFee() for the ciphertext op"],
+                },
+            ],
+            "notes": ["Frontend should query inco.getFee() using Inco JS and pass it as tx value"],
+        }
+    )
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def record_run_tx(request, run_id: int):
-    _, run, error = _require_run_in_active_org(request.user, run_id)
+    _, run, error = _require_run_for_employer(request.user, run_id)
     if error:
         return error
 
@@ -586,10 +565,12 @@ def record_claim_tx(request, run_id: int, index: int):
         return _json_error(str(ex))
 
     profile, _ = UserProfile.objects.get_or_create(user=request.user)
-    is_owner = _user_role_for_org(request.user, run.org_id) in EMPLOYER_ROLES
-    is_self = (profile.wallet or "").lower() == wallet.lower()
+    user_wallet = (profile.wallet_address or "").lower()
+    employer, _ = require_employer(request.user)
+    is_employer = bool(employer and employer.id == run.employer_id)
+    is_self = user_wallet == wallet.lower()
 
-    if not is_owner and not is_self:
+    if not is_employer and not is_self:
         return _json_error("Not allowed to record claim tx for this wallet", status=403)
 
     claim = PayrollClaim.objects.filter(run=run, index=index, employee_wallet__iexact=wallet).first()
@@ -605,7 +586,7 @@ def record_claim_tx(request, run_id: int, index: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def open_run(request, run_id: int):
-    _, run, error = _require_run_in_active_org(request.user, run_id)
+    _, run, error = _require_run_for_employer(request.user, run_id)
     if error:
         return error
 
